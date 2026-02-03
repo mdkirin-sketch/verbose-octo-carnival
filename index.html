@@ -385,18 +385,22 @@ body {
   applyValues(FALLBACK);
 
   // load data.json
-  fetch(`data.json?ts=${Date.now()}`, { cache: "no-store" })
-    .then(r => {
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      return r.json();
-    })
-    .then(rows => {
-      const vals = computeFromRows(Array.isArray(rows) ? rows : []);
-      applyValues(vals);
-    })
-    .catch(err => {
-      console.warn("data.json fetch failed, using fallback:", err);
-    });
+fetch(`summary.json?ts=${Date.now()}`, { cache: "no-store" })
+  .then(r => {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  })
+  .then(s => {
+    const vals = {
+      activity: Number(s.daily_today ?? 0),  // Cards Today
+      exercise: Number(s.cards_30d ?? 0),    // Cards Monthly (rolling 30d)
+      stand: Number(s.qs_30d ?? 0)           // UWorld Monthly (rolling 30d)
+    };
+    applyValues(vals);
+  })
+  .catch(err => {
+    console.warn("summary.json fetch failed, using fallback:", err);
+  });
 </script>
 </body>
 </html>
