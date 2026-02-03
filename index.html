@@ -249,40 +249,39 @@ body {
   const circleNames = ["activity", "exercise", "stand"];
   const circles = {};
 
-  // ✅ Goals (100%)
+  // Goals (100%)
   const LIMITS = {
-    activity: 500,     // Daily Anki
-    exercise: 15000,   // Month Anki
-    stand: 200         // Qs per month
+    activity: 500,     // Daily cards goal
+    exercise: 15000,   // Cards (rolling 30d) goal
+    stand: 200         // Qs (rolling 30d) goal
   };
 
-  // ✅ Fallback values (если data.json не загрузился)
-  const FALLBACK = {
-    activity: 180,
-    exercise: 8200,
-    stand: 90
-  };
+  // Fallback values (на случай если json не загрузился)
+  const FALLBACK = { activity: 180, exercise: 8200, stand: 90 };
 
-  function clamp(n, a, b) {
-    return Math.max(a, Math.min(b, n));
-  }
+  function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
 
   function setProgress(circleObj) {
     const percent = (circleObj.value / circleObj.limit) * 100;
 
-    // дуга максимум 100%
-    const pClamped = clamp(percent, 0, 100);
-    const offset = circleObj.length - (pClamped / 100) * circleObj.length;
+    // arc capped to 100%
+    const p = clamp(percent, 0, 100);
+    const offset = circleObj.length - (p / 100) * circleObj.length;
     circleObj.circle.style.strokeDashoffset = offset;
 
-    // точка может крутиться дальше 100%
+    // dot can rotate beyond 100%
     circleObj.dot.style.transform = `rotate(${percent * 3.6}deg)`;
   }
 
-  // --- date helpers (local time) ---
+  // --- date helpers (local time on client) ---
   function startOfDay(d) {
     const x = new Date(d);
-    x.setHours(0,0,0,0);
+    x.setHours(0, 0, 0, 0);
+    return x;
+  }
+  function endOfDay(d) {
+    const x = startOfDay(d);
+    x.setHours(23, 59, 59, 999);
     return x;
   }
   function daysAgo(n) {
@@ -294,30 +293,17 @@ body {
     return dateObj >= fromInclusive && dateObj <= toInclusive;
   }
 
-  // --- robust field getters ---
-  function getType(row) {
-    // поддержим разные варианты названия поля
-    const t = (row.type ?? row.Type ?? row.category ?? row.Category ?? row.kind ?? row.Kind ?? "").toString().toLowerCase();
-    const n = (row.name ?? row.Name ?? row.title ?? row.Title ?? "").toString().toLowerCase();
-    // пробуем понять по type/name
-    const s = (t + " " + n).trim();
-
-    if (s.includes("daily")) return "daily";
-    if (s.includes("month") || s.includes("monthly")) return "month";
-    if (s.includes("uworld") || s.includes("qs") || s.includes("qbank") || s.includes("questions")) return "qs";
-
-    return ""; // unknown
+  // --- robust getters for your current data.json format ---
+  function getName(row) {
+    return (row?.name ?? row?.Name ?? "").toString().trim().toLowerCase();
   }
-
   function getValue(row) {
-    const v = row.value ?? row.Value ?? row.number ?? row.Number ?? row.amount ?? row.Amount ?? 0;
+    const v = row?.value ?? row?.Value ?? row?.number ?? row?.Number ?? 0;
     const num = Number(v);
     return Number.isFinite(num) ? num : 0;
   }
-
   function getDate(row) {
-    // ожидаем ISO string в row.date / Date
-    const s = row.date ?? row.Date ?? row.created ?? row.Created ?? null;
+    const s = row?.date ?? row?.Date ?? row?.created ?? row?.Created ?? null;
     if (!s) return null;
     const d = new Date(s);
     return Number.isFinite(d.getTime()) ? d : null;
@@ -325,58 +311,55 @@ body {
 
   function computeFromRows(rows) {
     const now = new Date();
-    const today0 = startOfDay(now);
-    const todayEnd = new Date(today0); todayEnd.setHours(23,59,59,999);
 
-    // rolling 30 days
-    const from30 = startOfDay(daysAgo(29)); // включая сегодня = 30 суток
+    const todayStart = startOfDay(now);
+    const todayEnd = endOfDay(now);
+
+    const from30 = startOfDay(daysAgo(29)); // incl today = 30 days
     const toNow = now;
 
-    let dailySum = 0;
-    let monthSum = 0;
-    let qsSum = 0;
+    let dailyToday = 0;
+    let cards30d = 0;
+    let qs30d = 0;
 
     for (const r of rows) {
       const d = getDate(r);
       if (!d) continue;
 
-      const type = getType(r);
+      const name = getName(r);
       const val = getValue(r);
 
-      // daily = только сегодня, только daily
-      if (type === "daily" && inRange(d, today0, todayEnd)) {
-        dailySum += val;
+      // Cards: name="daily"
+      if (name === "daily") {
+        if (inRange(d, todayStart, todayEnd)) dailyToday += val;
+        if (inRange(d, from30, toNow)) cards30d += val;
       }
 
-      // month anki = последние 30 дней, type month
-      if (type === "month" && inRange(d, from30, toNow)) {
-        monthSum += val;
-      }
-
-      // qs = последние 30 дней, type qs
-      if (type === "qs" && inRange(d, from30, toNow)) {
-        qsSum += val;
+      // Qs: name="today"
+      if (name === "today") {
+        if (inRange(d, from30, toNow)) qs30d += val;
       }
     }
 
     return {
-      activity: Math.round(dailySum),
-      exercise: Math.round(monthSum),
-      stand: Math.round(qsSum)
+      activity: Math.round(dailyToday),
+      exercise: Math.round(cards30d),
+      stand: Math.round(qs30d)
     };
   }
 
   function applyValues(vals) {
-    // текст
-    document.querySelector("#activityGoal").textContent = LIMITS.activity;
-    document.querySelector("#exerciseGoal").textContent = LIMITS.exercise;
-    document.querySelector("#standGoal").textContent = LIMITS.stand;
+    // goals
+    document.getElementById("activityGoal").textContent = LIMITS.activity;
+    document.getElementById("exerciseGoal").textContent = LIMITS.exercise;
+    document.getElementById("standGoal").textContent = LIMITS.stand;
 
-    document.querySelector("#activityValue").textContent = vals.activity;
-    document.querySelector("#exerciseValue").textContent = vals.exercise;
-    document.querySelector("#standValue").textContent = vals.stand;
+    // numbers
+    document.getElementById("activityValue").textContent = vals.activity;
+    document.getElementById("exerciseValue").textContent = vals.exercise;
+    document.getElementById("standValue").textContent = vals.stand;
 
-    // кольца
+    // rings
     circles.activity.value = vals.activity;
     circles.exercise.value = vals.exercise;
     circles.stand.value = vals.stand;
@@ -386,30 +369,23 @@ body {
     setProgress(circles.stand);
   }
 
-  // init circles (geometry)
+  // init rings
   circleNames.forEach((name) => {
     const circle = document.querySelector(`#${name} .progress-ring__circle`);
     const dot = document.querySelector(`#${name} .dot`);
     const length = circle.getTotalLength();
 
-    circles[name] = {
-      circle,
-      dot,
-      length,
-      limit: LIMITS[name],
-      value: FALLBACK[name]
-    };
+    circles[name] = { circle, dot, length, limit: LIMITS[name], value: 0 };
 
     circle.style.strokeDasharray = `${length} ${length}`;
     circle.style.strokeDashoffset = length;
   });
 
-  // 1) сначала показываем fallback (чтобы не было пусто)
+  // show fallback immediately
   applyValues(FALLBACK);
 
-  // 2) потом пытаемся загрузить data.json (лежит в корне репо рядом с index.html)
-  //    cache-bust, чтобы Notion updates быстрее подтягивались
-  fetch(`./data.json?ts=${Date.now()}`, { cache: "no-store" })
+  // load data.json
+  fetch(`data.json?ts=${Date.now()}`, { cache: "no-store" })
     .then(r => {
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
@@ -420,7 +396,6 @@ body {
     })
     .catch(err => {
       console.warn("data.json fetch failed, using fallback:", err);
-      // оставляем fallback
     });
 </script>
 </body>
