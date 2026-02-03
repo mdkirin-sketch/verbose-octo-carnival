@@ -3,10 +3,7 @@ name: Sync Notion Results
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *" # every 30 minutes
-
-permissions:
-  contents: write
+    - cron: "*/30 * * * *"
 
 jobs:
   sync:
@@ -17,46 +14,32 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Fetch from Notion
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         run: |
-          curl -sS -X POST "https://api.notion.com/v1/databases/2fce797c4e3580c0b645f298a8198fb8/query" \
-            -H "Authorization: Bearer $NOTION_TOKEN" \
+          curl -s -X POST "https://api.notion.com/v1/databases/2fce797c4e3580c0b645f298a8198fb8/query" \
+            -H "Authorization: Bearer ${{ secrets.NOTION_TOKEN }}" \
             -H "Notion-Version: 2022-06-28" \
             -H "Content-Type: application/json" \
-            -d '{}' \
             > notion_raw.json
 
-      - name: Debug notion_raw.json (first lines + keys)
-        run: |
-          echo "---- first 120 lines ----"
-          sed -n '1,120p' notion_raw.json
-          echo "---- keys ----"
-          node -e "const r=require('./notion_raw.json'); console.log(Object.keys(r));"
-
-      - name: Convert to simple JSON (data.json)
+      - name: Convert to data.json
         run: |
           node <<'EOF'
           const fs = require("fs");
-          const raw = JSON.parse(fs.readFileSync("notion_raw.json","utf8"));
+          const raw = JSON.parse(fs.readFileSync("notion_raw.json", "utf8"));
 
           if (!raw.results) {
-            console.error("No raw.results. Full response:");
-            console.error(JSON.stringify(raw, null, 2));
+            console.error("Notion API error:", raw);
             process.exit(1);
           }
 
-          // CHANGE THESE 3 PROPERTY NAMES if your database uses different names:
-          // "Date"  (date property)
-          // "Value" (number property)
-          // "Type"  (select property)
           const data = raw.results.map(r => ({
-            date: r.properties?.Date?.date?.start ?? null,
-            value: r.properties?.Value?.number ?? 0,
-            type: r.properties?.Type?.select?.name ?? "unknown"
+            name: r.properties.Name?.title?.[0]?.plain_text ?? "",
+            value: r.properties.Number?.number ?? 0,
+            date: r.properties.Date?.date?.start ?? null
           }));
 
           fs.writeFileSync("data.json", JSON.stringify(data, null, 2));
+          console.log("Saved", data.length, "rows");
           EOF
 
       - name: Commit data.json
