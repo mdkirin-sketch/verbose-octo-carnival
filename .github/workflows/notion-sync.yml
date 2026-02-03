@@ -3,7 +3,7 @@ name: Sync Notion Results
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"   # каждые 30 минут
+    - cron: "*/30 * * * *"
 
 permissions:
   contents: write
@@ -16,7 +16,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     env:
-      TZ: Europe/Moscow   # ✅ чтобы "today" считался по Мск времени (поменяй, если нужно)
+      TZ: Europe/Moscow
 
     steps:
       - name: Checkout repo
@@ -35,7 +35,7 @@ jobs:
             --data '{"page_size": 100}' \
             > notion_raw.json
 
-      - name: Convert to data.json and summary.json (today + rolling 30d)
+      - name: Convert to data.json + summary.json (auto-detect props)
         run: |
           node <<'EOF'
           const fs = require("fs");
@@ -47,24 +47,68 @@ jobs:
           }
 
           const results = Array.isArray(raw.results) ? raw.results : [];
+          console.log("Rows fetched:", results.length);
 
-          // --- helpers ---
           const norm = (s) => (s || "").toString().trim().toLowerCase();
 
-          const titleText = (titleProp) =>
-            (titleProp?.title || []).map(t => t.plain_text).join("").trim();
-
-          function pickDateFromProps(page){
+          // --- Auto-detect property keys by type (title/number/date/created_time)
+          function detectKeys(page) {
             const props = page.properties || {};
-            const d = props["Date"]; // твоя колонка называется "Date"
-            // Date может быть date или created_time (если ты сделал Created time)
+            const entries = Object.entries(props);
+
+            const titleKey = entries.find(([,p]) => p?.type === "title")?.[0] || null;
+            const numberKey = entries.find(([,p]) => p?.type === "number")?.[0] || null;
+
+            // Prefer property named "Date" if it exists; otherwise first date/created_time
+            let dateKey = ("Date" in props) ? "Date" : null;
+            if (dateKey && !["date","created_time"].includes(props[dateKey]?.type)) dateKey = null;
+
+            if (!dateKey) {
+              dateKey = entries.find(([,p]) => p?.type === "date")?.[0]
+                     || entries.find(([,p]) => p?.type === "created_time")?.[0]
+                     || null;
+            }
+
+            return { titleKey, numberKey, dateKey };
+          }
+
+          const samplePage = results[0];
+          if (!samplePage) {
+            fs.writeFileSync("data.json", "[]");
+            fs.writeFileSync("summary.json", JSON.stringify({
+              generated_at: new Date().toISOString(),
+              timezone: process.env.TZ || "system",
+              today: null,
+              daily_today: 0,
+              cards_30d: 0,
+              qs_30d: 0,
+              note: "No rows returned from Notion."
+            }, null, 2));
+            console.log("No rows. Wrote empty outputs.");
+            process.exit(0);
+          }
+
+          const keys = detectKeys(samplePage);
+          console.log("Detected keys:", keys);
+
+          function titleText(p) {
+            if (!p) return "";
+            if (p.type === "title") return (p.title || []).map(t => t.plain_text).join("").trim();
+            if (p.type === "rich_text") return (p.rich_text || []).map(t => t.plain_text).join("").trim();
+            return "";
+          }
+
+          function pickDate(page, dateKey) {
+            const props = page.properties || {};
+            const d = dateKey ? props[dateKey] : null;
+
             if (d?.type === "date") return d.date?.start ?? null;
             if (d?.type === "created_time") return d.created_time ?? null;
-            // fallback: у самой страницы всегда есть created_time
+
+            // fallback: у страницы есть created_time всегда
             return page.created_time ?? null;
           }
 
-          // local "day key" based on runner TZ (мы выставили TZ)
           function dayKey(date){
             const y = date.getFullYear();
             const m = String(date.getMonth()+1).padStart(2,"0");
@@ -78,43 +122,37 @@ jobs:
             return Number.isFinite(d.getTime()) ? d : null;
           }
 
-          // rolling 30 days window: today-29 .. today
+          // Rolling 30 days: today-29..today (локально по TZ за счёт env TZ)
           const now = new Date();
           const todayKey = dayKey(now);
 
           const start = new Date(now);
           start.setHours(0,0,0,0);
-          start.setDate(start.getDate() - 29); // включая сегодня => 30 дней
+          start.setDate(start.getDate() - 29);
 
-          // 1) convert rows -> data.json
+          // Build data.json
           const data = results.map(page => {
             const props = page.properties || {};
-            const name = titleText(props["Name"]);       // Title column
-            const value = props["Number"]?.number ?? 0;  // Number column
-            const dateStr = pickDateFromProps(page);
 
-            return {
-              name,
-              value,
-              date: dateStr
-            };
+            const name = keys.titleKey ? titleText(props[keys.titleKey]) : "";
+            const value = keys.numberKey ? (props[keys.numberKey]?.number ?? 0) : 0;
+            const dateStr = pickDate(page, keys.dateKey);
+
+            return { name, value, date: dateStr };
           });
 
           fs.writeFileSync("data.json", JSON.stringify(data, null, 2));
 
-          // 2) compute summary.json
-          // We'll sum by type and date, within rolling 30d,
-          // and daily_today = only today's dayKey.
+          // Compute summary.json
           let daily_today = 0;
           let cards_30d = 0;
           let qs_30d = 0;
 
           for (const row of data) {
-            const type = norm(row.name); // "daily" or "today"
+            const type = norm(row.name);  // ожидаем "daily" и "today"
             const d = parseISO(row.date);
             if (!d) continue;
 
-            // in rolling 30 days?
             if (d < start || d > now) continue;
 
             const k = dayKey(d);
@@ -131,10 +169,11 @@ jobs:
           const summary = {
             generated_at: now.toISOString(),
             timezone: process.env.TZ || "system",
+            detected: keys,            // чтобы ты видел, что он выбрал
             today: todayKey,
-            daily_today, // ✅ for outer ring
-            cards_30d,    // ✅ for middle ring
-            qs_30d        // ✅ for inner ring
+            daily_today,
+            cards_30d,
+            qs_30d
           };
 
           fs.writeFileSync("summary.json", JSON.stringify(summary, null, 2));
@@ -147,7 +186,6 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           git add data.json summary.json
-
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "Update data.json + summary.json"
           git push
