@@ -3,49 +3,151 @@ name: Sync Notion Results
 on:
   workflow_dispatch:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/30 * * * *"   # каждые 30 минут
+
+permissions:
+  contents: write
+
+concurrency:
+  group: notion-sync
+  cancel-in-progress: true
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    env:
+      TZ: Europe/Moscow   # ✅ чтобы "today" считался по Мск времени (поменяй, если нужно)
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Fetch from Notion
+      - name: Fetch from Notion (database query)
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
         run: |
-          curl -s -X POST "https://api.notion.com/v1/databases/2fce797c4e358052a652f160b913dd3f/query" \
-            -H "Authorization: Bearer ${{ secrets.NOTION_TOKEN }}" \
+          set -e
+          curl -sS -X POST "https://api.notion.com/v1/databases/${NOTION_DB_ID}/query" \
+            -H "Authorization: Bearer ${NOTION_TOKEN}" \
             -H "Notion-Version: 2022-06-28" \
             -H "Content-Type: application/json" \
+            --data '{"page_size": 100}' \
             > notion_raw.json
 
-      - name: Convert to data.json
+      - name: Convert to data.json and summary.json (today + rolling 30d)
         run: |
           node <<'EOF'
           const fs = require("fs");
-          const raw = JSON.parse(fs.readFileSync("notion_raw.json", "utf8"));
 
-          if (!raw.results) {
+          const raw = JSON.parse(fs.readFileSync("notion_raw.json","utf8"));
+          if (raw && raw.object === "error") {
             console.error("Notion API error:", raw);
             process.exit(1);
           }
 
-          const data = raw.results.map(r => ({
-            name: r.properties.Name?.title?.[0]?.plain_text ?? "",
-            value: r.properties.Number?.number ?? 0,
-            date: r.properties.Date?.date?.start ?? null
-          }));
+          const results = Array.isArray(raw.results) ? raw.results : [];
+
+          // --- helpers ---
+          const norm = (s) => (s || "").toString().trim().toLowerCase();
+
+          const titleText = (titleProp) =>
+            (titleProp?.title || []).map(t => t.plain_text).join("").trim();
+
+          function pickDateFromProps(page){
+            const props = page.properties || {};
+            const d = props["Date"]; // твоя колонка называется "Date"
+            // Date может быть date или created_time (если ты сделал Created time)
+            if (d?.type === "date") return d.date?.start ?? null;
+            if (d?.type === "created_time") return d.created_time ?? null;
+            // fallback: у самой страницы всегда есть created_time
+            return page.created_time ?? null;
+          }
+
+          // local "day key" based on runner TZ (мы выставили TZ)
+          function dayKey(date){
+            const y = date.getFullYear();
+            const m = String(date.getMonth()+1).padStart(2,"0");
+            const d = String(date.getDate()).padStart(2,"0");
+            return `${y}-${m}-${d}`;
+          }
+
+          function parseISO(s){
+            if (!s) return null;
+            const d = new Date(s);
+            return Number.isFinite(d.getTime()) ? d : null;
+          }
+
+          // rolling 30 days window: today-29 .. today
+          const now = new Date();
+          const todayKey = dayKey(now);
+
+          const start = new Date(now);
+          start.setHours(0,0,0,0);
+          start.setDate(start.getDate() - 29); // включая сегодня => 30 дней
+
+          // 1) convert rows -> data.json
+          const data = results.map(page => {
+            const props = page.properties || {};
+            const name = titleText(props["Name"]);       // Title column
+            const value = props["Number"]?.number ?? 0;  // Number column
+            const dateStr = pickDateFromProps(page);
+
+            return {
+              name,
+              value,
+              date: dateStr
+            };
+          });
 
           fs.writeFileSync("data.json", JSON.stringify(data, null, 2));
-          console.log("Saved", data.length, "rows");
+
+          // 2) compute summary.json
+          // We'll sum by type and date, within rolling 30d,
+          // and daily_today = only today's dayKey.
+          let daily_today = 0;
+          let cards_30d = 0;
+          let qs_30d = 0;
+
+          for (const row of data) {
+            const type = norm(row.name); // "daily" or "today"
+            const d = parseISO(row.date);
+            if (!d) continue;
+
+            // in rolling 30 days?
+            if (d < start || d > now) continue;
+
+            const k = dayKey(d);
+            const v = Number(row.value) || 0;
+
+            if (type === "daily") {
+              cards_30d += v;
+              if (k === todayKey) daily_today += v;
+            } else if (type === "today") {
+              qs_30d += v;
+            }
+          }
+
+          const summary = {
+            generated_at: now.toISOString(),
+            timezone: process.env.TZ || "system",
+            today: todayKey,
+            daily_today, // ✅ for outer ring
+            cards_30d,    // ✅ for middle ring
+            qs_30d        // ✅ for inner ring
+          };
+
+          fs.writeFileSync("summary.json", JSON.stringify(summary, null, 2));
+          console.log("summary:", summary);
           EOF
 
-      - name: Commit data.json
+      - name: Commit data.json + summary.json
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add data.json
-          git commit -m "Update data.json" || echo "No changes"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add data.json summary.json
+
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "Update data.json + summary.json"
           git push
