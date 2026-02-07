@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-02-07T09:01:01.192Z",
+  "generated_at": "2026-02-07T09:58:42.350Z",
   "timezone": "Europe/Moscow",
   "detected": {
     "titleKey": "Name",
@@ -8,6 +8,6 @@
   },
   "today": "2026-02-07",
   "daily_today": 0,
-  "cards_30d": 800,
-  "qs_30d": 40
+  "cards_30d": 0,
+  "qs_30d": 0
 }
