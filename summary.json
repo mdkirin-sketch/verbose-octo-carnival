@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-04-23T09:26:22.053Z",
+  "generated_at": "2026-04-23T10:51:43.792Z",
   "timezone": "Europe/Moscow",
   "detected": {
     "titleKey": "Name",
@@ -7,7 +7,7 @@
     "dateKey": "Date"
   },
   "today": "2026-04-23",
-  "daily_today": 0,
-  "cards_30d": 0,
+  "daily_today": 200,
+  "cards_30d": 200,
   "qs_30d": 0
 }
