@@ -1,12 +1,12 @@
 {
-  "generated_at": "2026-06-18T18:38:46.820Z",
+  "generated_at": "2026-06-18T21:15:37.548Z",
   "timezone": "Europe/Moscow",
   "detected": {
     "titleKey": "Name",
     "numberKey": "Number",
     "dateKey": "Date"
   },
-  "today": "2026-06-18",
+  "today": "2026-06-19",
   "daily_today": 0,
   "cards_30d": 0,
   "qs_30d": 0
